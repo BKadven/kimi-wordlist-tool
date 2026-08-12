@@ -12,6 +12,12 @@ Kimi 雅思单词本整理器
 - 可选择是否启用深度思考；默认关闭以节省时间和费用。
 - 可勾选在本机记住 Kimi API Key，保存到 Windows 凭据管理器，不写入源码目录。
 
+普通用户下载
+请到 GitHub 仓库的 Releases 页面下载最新版：
+Kimi雅思单词本整理器_太阳版.exe
+
+下载后双击运行即可，不需要安装 Python，也不需要打开 VS Code。
+
 运行源码版
 1. 安装 Python。
 2. 双击 run_gui.cmd。
