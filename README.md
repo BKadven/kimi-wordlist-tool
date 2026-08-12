@@ -16,7 +16,7 @@
 普通用户请到仓库右侧或顶部的 **Releases** 页面下载最新版 EXE：
 
 ```text
-Kimi雅思单词本整理器_太阳版.exe
+KimiWordlistTool-v1.1.0.exe
 ```
 
 下载后双击运行即可，不需要安装 Python，也不需要打开 VS Code。
