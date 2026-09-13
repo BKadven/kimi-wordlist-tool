@@ -12,6 +12,7 @@
 - 自动生成三列表格 Word 单词本
 - 同时生成手机阅读版 HTML，可用 iPhone Safari、“文件”App 或邮件附件打开
 - 可选择整理完成后自动归档到个人主页仓库，并提交推送到 GitHub
+- 归档时同时发布 `wordbook.json`（schema v1 规范化源数据，含 `content_sha256`）并维护 `wordbooks-manifest.json`，供每日单词复习邮件系统读取
 - 保留模型原始 JSON 和结构化 JSON，便于核查
 - 支持测试 API、刷新模型列表
 - 支持将 API Key 保存到 Windows 凭据管理器
@@ -59,5 +60,5 @@ dist\Wgen.exe
 - 可用环境变量 `BIGMODEL_API_KEY` 预填智谱中国版 Key；海外 Z.ai 支持 `ZAI_API_KEY`；旧 Kimi 服务仍支持 `MOONSHOT_API_KEY`。
 - 第一次建议先用较短的 `.txt` 或 `.docx` 测试。
 - iPhone 阅读建议使用生成的“手机版 HTML”：可以发邮件给自己作为附件，也可以放到 iCloud Drive 后在 iPhone 的“文件”App 或 Safari 中打开。
-- 如果启用个人主页归档，软件会把手机版 HTML 写入 personal-homepage 仓库的 `notes/ielts/wordbooks/`，更新收录页，并自动 `git commit` / `git push`。
+- 如果启用个人主页归档，软件会把手机版 HTML 写入 personal-homepage 仓库的 `notes/ielts/wordbooks/`，同时在该篇归档目录写入 `meta.json` 与 `wordbook.json`，更新收录页和 `wordbooks-manifest.json`，并自动 `git commit` / `git push`。
 - `.venv`、`build`、`dist`、EXE 和 zip 文件不应提交到 GitHub。

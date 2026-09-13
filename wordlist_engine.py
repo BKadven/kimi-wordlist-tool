@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,8 @@ from openai import OpenAI
 COLUMN_WIDTHS_CM = (4.4, 2.2, 10.8)
 TABLE_WIDTH_CM = sum(COLUMN_WIDTHS_CM)
 SUPPORTED_INPUT_SUFFIXES = {".docx", ".txt"}
+WORDBOOK_SCHEMA_VERSION = 1
+WORDBOOK_MANIFEST_FILENAME = "wordbooks-manifest.json"
 ProgressCallback = Callable[[int, str], None]
 DEFAULT_HOMEPAGE_BASE_URL = "https://xxxcillian.org"
 DEFAULT_PROVIDER_ID = "bigmodel"
@@ -1486,6 +1489,103 @@ def count_wordbook_data(data: dict[str, Any]) -> tuple[int, int]:
     return entry_count, word_count
 
 
+def compute_content_sha256(data: dict[str, Any]) -> str:
+    """对词条正文内容计算稳定哈希，供邮件复习系统判断内容是否变化。
+
+    只覆盖正文载荷（副标题、纠错、章节词条），不包含标题、归档编号等元信息，
+    这样仅元信息变化不会触发邮件系统的"内容更新"。
+    """
+    payload = {
+        "subtitle": value_text(data.get("subtitle")),
+        "corrections": data.get("corrections") if isinstance(data.get("corrections"), list) else [],
+        "sections": data.get("sections") if isinstance(data.get("sections"), list) else [],
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_wordbook_document(
+    data: dict[str, Any],
+    source_path: Path,
+    archive_id: str,
+    *,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    """生成随归档一同发布的 wordbook.json（schema_version = 1）。
+
+    wordbook.json 是每日单词复习邮件系统的唯一可信源，sections / corrections
+    直接采用 validate_data() 校验后的结构化数据，不增删、不改写字段。
+    """
+    entry_count, word_count = count_wordbook_data(data)
+    return {
+        "schema_version": WORDBOOK_SCHEMA_VERSION,
+        "archive_id": archive_id,
+        "title": f"{source_path.stem} 雅思单词本",
+        "source_file": source_path.name,
+        "generated_at": generated_at or datetime.now().isoformat(timespec="seconds"),
+        "content_sha256": compute_content_sha256(data),
+        "entry_count": entry_count,
+        "word_count": word_count,
+        "subtitle": value_text(data.get("subtitle")),
+        "corrections": data.get("corrections") if isinstance(data.get("corrections"), list) else [],
+        "sections": data.get("sections") if isinstance(data.get("sections"), list) else [],
+    }
+
+
+def load_wordbooks_manifest(wordbooks_dir: Path) -> dict[str, Any]:
+    manifest_path = wordbooks_dir / WORDBOOK_MANIFEST_FILENAME
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            manifest = None
+        if isinstance(manifest, dict) and isinstance(manifest.get("wordbooks"), list):
+            return manifest
+    return {"schema_version": WORDBOOK_SCHEMA_VERSION, "wordbooks": []}
+
+
+def update_wordbooks_manifest(
+    wordbooks_dir: Path,
+    wordbook: dict[str, Any],
+    *,
+    base_url: str = DEFAULT_HOMEPAGE_BASE_URL,
+) -> Path:
+    """按 archive_id 幂等更新 wordbooks-manifest.json 并写盘。"""
+    manifest = load_wordbooks_manifest(wordbooks_dir)
+    archive_id = value_text(wordbook.get("archive_id"))
+    record = {
+        "archive_id": archive_id,
+        "title": value_text(wordbook.get("title")),
+        "source_file": value_text(wordbook.get("source_file")),
+        "generated_at": value_text(wordbook.get("generated_at")),
+        "schema_version": wordbook.get("schema_version", WORDBOOK_SCHEMA_VERSION),
+        "content_sha256": value_text(wordbook.get("content_sha256")),
+        "wordbook_json_url": (
+            f"{base_url.rstrip('/')}/notes/ielts/wordbooks/{quote(archive_id)}/wordbook.json"
+        ),
+        "entry_count": wordbook.get("entry_count", 0),
+        "word_count": wordbook.get("word_count", 0),
+        "email_review_enabled": True,
+    }
+    books = [
+        item
+        for item in manifest["wordbooks"]
+        if isinstance(item, dict) and value_text(item.get("archive_id")) != archive_id
+    ]
+    books.append(record)
+    books.sort(key=lambda item: value_text(item.get("generated_at")), reverse=True)
+    manifest["schema_version"] = WORDBOOK_SCHEMA_VERSION
+    manifest["wordbooks"] = books
+    manifest["generated_at"] = datetime.now().isoformat(timespec="seconds")
+
+    manifest_path = wordbooks_dir / WORDBOOK_MANIFEST_FILENAME
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
 def run_git(repo_path: Path, args: list[str]) -> str:
     completed = subprocess.run(
         ["git", "-C", str(repo_path), *args],
@@ -1860,6 +1960,19 @@ def publish_mobile_html_to_homepage(
         encoding="utf-8",
     )
 
+    # 邮件复习系统的规范化源数据（schema v1）与全局 manifest
+    wordbook = build_wordbook_document(
+        data,
+        source_path,
+        folder,
+        generated_at=metadata["generated_at"],
+    )
+    (archive_dir / "wordbook.json").write_text(
+        json.dumps(wordbook, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    update_wordbooks_manifest(wordbooks_dir, wordbook, base_url=base_url)
+
     index_path = rebuild_wordbook_index(wordbooks_dir)
     ensure_ielts_wordbook_entry(homepage_repo)
 
@@ -1867,8 +1980,10 @@ def publish_mobile_html_to_homepage(
         "notes/ielts/index.html",
         "notes/ielts/wordbooks/index.html",
         "notes/ielts/wordbooks/search-index.json",
+        f"notes/ielts/wordbooks/{WORDBOOK_MANIFEST_FILENAME}",
         f"notes/ielts/wordbooks/{folder}/index.html",
         f"notes/ielts/wordbooks/{folder}/meta.json",
+        f"notes/ielts/wordbooks/{folder}/wordbook.json",
     ]
     run_git(homepage_repo, ["add", "--", *relative_paths])
     staged = run_git(homepage_repo, ["diff", "--cached", "--name-only", "--", *relative_paths])
