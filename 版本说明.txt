@@ -1,13 +1,19 @@
-版本：1.1
+版本：1.5
 
 主要功能：
 - Windows Tkinter 图形界面
 - 直接选择原始 .docx / .txt 和输出目录
-- API Key 密文输入且不保存
+- 软件名称改为 Wgen
+- 默认支持 BigModel / 智谱中国版，模型码 glm-5.3-flash
+- 保留海外 Ox Alpha / Z.ai GLM 作为可选模型服务
+- 保留 Kimi / Moonshot 作为可选模型服务
+- API Key 密文输入；可按模型服务分别保存到 Windows 凭据管理器
 - 可测试 API、刷新模型列表
-- 默认关闭深度思考以节省费用
+- 默认关闭高强度思考以节省费用
 - 自动读取完整单词本整理规则
-- Kimi JSON Mode 结构化输出
+- 模型 JSON Mode 结构化输出
 - 自动生成三列表格 Word 单词本
+- 同时生成 iPhone 友好的离线手机阅读版 HTML
+- 可自动归档手机 HTML 到 personal-homepage 的雅思单词本收录页并推送 GitHub
 - 保留原始 JSON 和解析后 JSON 便于核查
 - 一键打包为无黑色终端窗口的单文件 EXE

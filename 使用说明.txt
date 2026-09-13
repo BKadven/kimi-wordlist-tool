@@ -1,11 +1,11 @@
-Kimi 雅思单词本整理器（图形版）
+Wgen（图形版）
 
 【最推荐：生成独立 EXE】
 1. 解压整个文件夹，不要只单独拿出某一个文件。
 2. 双击“build_exe.cmd”。
 3. 第一次会自动安装依赖并打包，通常需要几分钟。
 4. 成功后会自动打开 dist 文件夹。
-5. 以后直接双击 dist\Kimi雅思单词本整理器_太阳版.exe，不需要打开 VS Code。
+5. 以后直接双击 dist\Wgen.exe，不需要打开 VS Code。
 6. 可以右键 EXE → 显示更多选项 → 发送到 → 桌面快捷方式。
 
 【先测试图形界面】
@@ -14,23 +14,34 @@ Kimi 雅思单词本整理器（图形版）
 【软件使用流程】
 1. 点击“选择文件”，选择原始英文单词记录 .docx 或 .txt。
 2. 选择输出目录。
-3. 输入 Kimi API Key。Key 只保存在当前输入框中，不写入磁盘。
-4. 模型默认使用 kimi-k2.6；也可以点击“刷新列表”。
-5. 一般不要启用深度思考，可以节省时间和费用。
-6. 点击“开始整理”，确认 API 费用。
-7. 完成后直接打开生成的 Word。
+3. 如需同步到个人网站，勾选“整理完成后归档到个人主页”，并确认 personal-homepage 仓库路径正确。
+4. 如需自动上线，保留“自动提交并推送到 GitHub”勾选。
+5. 选择模型服务。中国用户默认推荐 BigModel / 智谱中国版；海外 Ox Alpha / Z.ai GLM 和旧 Kimi / Moonshot 也可继续使用。
+6. 输入所选平台的 API Key。Key 只保存在当前输入框中；勾选记住时会写入 Windows 凭据管理器，不写入软件目录。
+7. BigModel / Z.ai 模型默认使用 glm-5.3-flash；Kimi 模型默认使用 kimi-k2.6。也可以点击“刷新列表”。
+8. 一般不要启用高强度思考，可以节省时间和费用。
+9. 点击“开始整理”，确认 API 费用。
+10. 完成后会同时生成 Word 和“手机版 HTML”。如果启用个人主页归档，HTML 会同步进入网站的雅思单词本收录页。
 
 【整理规则】
 软件首次运行会把默认规则复制到：
-%APPDATA%\KimiWordlistTool\rules.txt
+%APPDATA%\Wgen\rules.txt
 
 可在软件中点击“打开整理规则”修改；点击“恢复默认规则”可还原。
 
 【输出内容】
-除最终 Word 外，输出目录还会保留两份调试文件：
-- Kimi 原始 JSON
+除最终 Word 外，输出目录还会生成：
+- 手机阅读版 HTML
+- 模型原始 JSON
 - 结构化 JSON
-它们便于排查遗漏或格式问题。
+
+手机阅读版 HTML 是单个离线文件，不依赖网络。你可以把它发邮件给自己作为附件，或放到 iCloud Drive / OneDrive，再在 iPhone 的“文件”App、Safari 或邮件附件预览中打开。
+
+如果启用个人主页归档，软件会把 HTML 写入 personal-homepage 仓库的 notes/ielts/wordbooks/，更新单词本收录页，并自动提交推送到 GitHub。等待网站部署完成后，可以直接在 xxxcillian.org 的雅思板块查看。
+
+两份 JSON 调试文件便于排查遗漏或格式问题：
+- 模型原始 JSON
+- 结构化 JSON
 
 【输入文件】
 - 支持 .docx Word 文档。
@@ -38,6 +49,11 @@ Kimi 雅思单词本整理器（图形版）
 
 【常见情况】
 - Windows 可能提示“未知发布者”：这是因为本地生成的 EXE 没有购买数字签名，不代表程序有问题。
-- 输入 API Key 时不会被保存。
-- 调用 Kimi API 会从你的开放平台余额中按量扣费。
+- 中国版请选择“BigModel / 智谱中国版”，模型默认使用 glm-5.3-flash，接口地址为 https://open.bigmodel.cn/api/paas/v4。
+- Ox Alpha 是 GLM-5.3-Flash 的匿名测试名；海外 Z.ai API 可选择“Ox Alpha / Z.ai GLM”。
+- 可用环境变量 BIGMODEL_API_KEY 预填智谱中国版 Key；海外 Z.ai 支持 ZAI_API_KEY；旧 Kimi 服务仍支持 MOONSHOT_API_KEY。
+- 输入 API Key 时默认不会被保存，除非勾选“在这台电脑上记住 API Key”。
+- 调用模型 API 会从所选平台余额中按量扣费。
 - 首次建议先用较短文档测试。
+- 邮件正文通常不适合直接粘贴完整 HTML；建议把 HTML 作为附件发送。
+- 自动推送依赖本机已安装 Git，并且 GitHub 登录状态可正常推送 personal-homepage 仓库。

@@ -8,6 +8,8 @@ env/
 
 build/
 dist/
+build_*/
+dist_*/
 *.spec~
 
 *.log

@@ -18,18 +18,22 @@ from keyring.errors import KeyringError, PasswordDeleteError
 from openai import AuthenticationError, BadRequestError, OpenAIError, RateLimitError
 
 from wordlist_engine import (
+    API_PROVIDERS,
+    DEFAULT_PROVIDER_ID,
     ProcessingResult,
     SUPPORTED_INPUT_SUFFIXES,
+    get_api_provider,
     list_available_models,
     process_wordlist,
     test_api,
 )
 
-APP_NAME = "Kimi 雅思单词本整理器"
-APP_FOLDER = "KimiWordlistTool"
-DEFAULT_MODELS = ["kimi-k2.6", "kimi-k2.5"]
-KEYRING_SERVICE = "KimiWordlistTool"
-KEYRING_USERNAME = "moonshot_api_key"
+APP_NAME = "Wgen"
+APP_FOLDER = "Wgen"
+LEGACY_APP_FOLDER = "KimiWordlistTool"
+DEFAULT_HOMEPAGE_REPO = Path.home() / "Documents" / "All_Program" / "personal-homepage"
+KEYRING_SERVICE = "Wgen"
+LEGACY_KEYRING_SERVICE = "KimiWordlistTool"
 
 
 def bundled_resource_path(*parts: str) -> Path:
@@ -48,6 +52,16 @@ def user_data_dir() -> Path:
     return path
 
 
+def legacy_user_data_dir() -> Path:
+    if sys.platform == "win32":
+        root = Path(os.getenv("APPDATA", Path.home()))
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return root / LEGACY_APP_FOLDER
+
+
 def open_path(path: Path) -> None:
     path = Path(path)
     if sys.platform == "win32":
@@ -60,13 +74,13 @@ def open_path(path: Path) -> None:
 
 def friendly_error(exc: Exception) -> str:
     if isinstance(exc, AuthenticationError):
-        return "API Key 无效或已经失效。请重新复制 Kimi 开放平台中的 API Key。"
+        return "API Key 无效或已经失效。请重新复制所选平台中的 API Key。"
     if isinstance(exc, RateLimitError):
-        return "请求受到限流，或账户余额不足。请稍后重试并检查 Kimi API 余额。"
+        return "请求受到限流，或账户余额不足。请稍后重试并检查所选平台的 API 余额。"
     if isinstance(exc, BadRequestError):
-        return f"Kimi 拒绝了本次请求：{exc}"
+        return f"模型服务拒绝了本次请求：{exc}"
     if isinstance(exc, OpenAIError):
-        return f"Kimi API 调用失败：{exc}"
+        return f"模型 API 调用失败：{exc}"
     return str(exc) or exc.__class__.__name__
 
 
@@ -74,8 +88,8 @@ class WordlistApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("860x700")
-        self.minsize(760, 620)
+        self.geometry("860x760")
+        self.minsize(780, 680)
 
         # 设置窗口和任务栏图标。失败时不影响程序启动。
         try:
@@ -89,6 +103,7 @@ class WordlistApp(tk.Tk):
         self.rules_path = self.app_dir / "rules.txt"
         self.settings_path = self.app_dir / "settings.json"
         self.default_rules_path = bundled_resource_path("resources", "default_rules.txt")
+        self._migrate_legacy_files()
         self._ensure_rules_file()
 
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -96,18 +111,31 @@ class WordlistApp(tk.Tk):
         self.last_result: ProcessingResult | None = None
 
         settings = self._load_settings()
-        saved_api_key = self._load_saved_api_key()
-        environment_api_key = os.getenv("MOONSHOT_API_KEY", "").strip()
+        provider_id = self._resolve_initial_provider(settings)
+        provider = get_api_provider(provider_id)
+        saved_api_key = self._load_saved_api_key(provider.id)
+        environment_api_key = os.getenv(provider.env_var, "").strip()
 
         self.input_var = tk.StringVar(value=settings.get("last_input", ""))
         self.output_var = tk.StringVar(value=settings.get("last_output", str(Path.home() / "Documents")))
+        self.provider_display_to_id = {provider.display_name: provider.id for provider in API_PROVIDERS.values()}
+        self.provider_var = tk.StringVar(value=provider.id)
+        self.provider_display_var = tk.StringVar(value=provider.display_name)
         self.api_key_var = tk.StringVar(value=environment_api_key or saved_api_key)
-        self.model_var = tk.StringVar(value=settings.get("model", DEFAULT_MODELS[0]))
+        model_setting = settings.get("model", "").strip()
+        self.model_var = tk.StringVar(value=model_setting or provider.default_model)
         self.show_key_var = tk.BooleanVar(value=False)
         self.remember_key_var = tk.BooleanVar(value=bool(saved_api_key and not environment_api_key))
         self.thinking_var = tk.BooleanVar(value=False)
+        homepage_repo_setting = settings.get("homepage_repo", str(DEFAULT_HOMEPAGE_REPO))
+        homepage_repo_exists = Path(homepage_repo_setting).is_dir()
+        self.publish_homepage_var = tk.BooleanVar(
+            value=settings.get("publish_homepage", "1") != "0" and homepage_repo_exists
+        )
+        self.homepage_repo_var = tk.StringVar(value=homepage_repo_setting)
+        self.push_homepage_var = tk.BooleanVar(value=settings.get("push_homepage", "1") != "0")
         self.progress_var = tk.IntVar(value=0)
-        self.status_var = tk.StringVar(value="请选择原始单词 Word 文件。")
+        self.status_var = tk.StringVar(value="请选择原始单词 Word 或 TXT 文件。")
 
         self._configure_style()
         self._build_ui()
@@ -140,7 +168,7 @@ class WordlistApp(tk.Tk):
         ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="选择原始 Word 或 TXT，调用 Kimi 自动整理，并生成适合 A4 打印的雅思单词本。",
+            text="选择原始 Word 或 TXT，调用所选模型自动整理，并生成打印版 Word 和手机阅读版 HTML。",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(3, 0))
 
@@ -156,17 +184,43 @@ class WordlistApp(tk.Tk):
         ttk.Entry(files_frame, textvariable=self.output_var).grid(row=1, column=1, sticky="ew", pady=5)
         ttk.Button(files_frame, text="选择目录…", command=self._choose_output).grid(row=1, column=2, padx=(8, 0), pady=5)
 
-        api_frame = ttk.LabelFrame(outer, text="Kimi API", style="Section.TLabelframe", padding=12)
+        ttk.Checkbutton(
+            files_frame,
+            text="整理完成后归档到个人主页",
+            variable=self.publish_homepage_var,
+        ).grid(row=2, column=1, columnspan=2, sticky="w", pady=(7, 2))
+
+        ttk.Label(files_frame, text="主页仓库：").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=5)
+        ttk.Entry(files_frame, textvariable=self.homepage_repo_var).grid(row=3, column=1, sticky="ew", pady=5)
+        ttk.Button(files_frame, text="选择仓库…", command=self._choose_homepage_repo).grid(row=3, column=2, padx=(8, 0), pady=5)
+
+        ttk.Checkbutton(
+            files_frame,
+            text="自动提交并推送到 GitHub",
+            variable=self.push_homepage_var,
+        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(1, 3))
+
+        api_frame = ttk.LabelFrame(outer, text="模型 API", style="Section.TLabelframe", padding=12)
         api_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         api_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(api_frame, text="API Key：").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
+        ttk.Label(api_frame, text="模型服务：").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
+        self.provider_combo = ttk.Combobox(
+            api_frame,
+            textvariable=self.provider_display_var,
+            values=list(self.provider_display_to_id.keys()),
+            state="readonly",
+        )
+        self.provider_combo.grid(row=0, column=1, sticky="ew", pady=5)
+        self.provider_combo.bind("<<ComboboxSelected>>", self._on_provider_changed)
+
+        ttk.Label(api_frame, text="API Key：").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
         self.key_entry = ttk.Entry(api_frame, textvariable=self.api_key_var, show="●")
-        self.key_entry.grid(row=0, column=1, sticky="ew", pady=5)
-        ttk.Checkbutton(api_frame, text="显示", variable=self.show_key_var, command=self._toggle_key).grid(row=0, column=2, padx=(8, 0), pady=5)
+        self.key_entry.grid(row=1, column=1, sticky="ew", pady=5)
+        ttk.Checkbutton(api_frame, text="显示", variable=self.show_key_var, command=self._toggle_key).grid(row=1, column=2, padx=(8, 0), pady=5)
 
         credential_row = ttk.Frame(api_frame)
-        credential_row.grid(row=1, column=1, columnspan=2, sticky="w", pady=(1, 5))
+        credential_row.grid(row=2, column=1, columnspan=2, sticky="w", pady=(1, 5))
         ttk.Checkbutton(
             credential_row,
             text="在这台电脑上记住 API Key",
@@ -183,22 +237,27 @@ class WordlistApp(tk.Tk):
             foreground="#666666",
         ).pack(side="left", padx=(10, 0))
 
-        ttk.Label(api_frame, text="模型：").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=5)
-        self.model_combo = ttk.Combobox(api_frame, textvariable=self.model_var, values=DEFAULT_MODELS, state="normal")
-        self.model_combo.grid(row=2, column=1, sticky="ew", pady=5)
+        ttk.Label(api_frame, text="模型：").grid(row=3, column=0, sticky="w", padx=(0, 8), pady=5)
+        self.model_combo = ttk.Combobox(
+            api_frame,
+            textvariable=self.model_var,
+            values=get_api_provider(self.provider_var.get()).default_models,
+            state="normal",
+        )
+        self.model_combo.grid(row=3, column=1, sticky="ew", pady=5)
         model_buttons = ttk.Frame(api_frame)
-        model_buttons.grid(row=2, column=2, padx=(8, 0), pady=5)
+        model_buttons.grid(row=3, column=2, padx=(8, 0), pady=5)
         ttk.Button(model_buttons, text="刷新列表", command=self._refresh_models).pack(side="left")
         ttk.Button(model_buttons, text="测试 API", command=self._test_api).pack(side="left", padx=(6, 0))
 
         ttk.Checkbutton(
             api_frame,
-            text="启用深度思考（通常更慢、消耗更多；整理单词本一般不需要）",
+            text="启用高强度思考（通常更慢、消耗更多；整理单词本一般不需要）",
             variable=self.thinking_var,
-        ).grid(row=3, column=1, columnspan=2, sticky="w", pady=(4, 2))
+        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(4, 2))
 
         rules_row = ttk.Frame(api_frame)
-        rules_row.grid(row=4, column=1, columnspan=2, sticky="w", pady=(5, 0))
+        rules_row.grid(row=5, column=1, columnspan=2, sticky="w", pady=(5, 0))
         ttk.Button(rules_row, text="打开整理规则", command=self._open_rules).pack(side="left")
         ttk.Button(rules_row, text="恢复默认规则", command=self._restore_rules).pack(side="left", padx=(6, 0))
         ttk.Label(rules_row, text="规则保存在你的 AppData 中，可自行修改。", foreground="#666666").pack(side="left", padx=(10, 0))
@@ -212,8 +271,10 @@ class WordlistApp(tk.Tk):
         controls.grid(row=0, column=0, sticky="ew")
         self.start_button = ttk.Button(controls, text="开始整理", style="Primary.TButton", command=self._start_processing)
         self.start_button.pack(side="left")
-        self.open_result_button = ttk.Button(controls, text="打开结果", command=self._open_result, state="disabled")
+        self.open_result_button = ttk.Button(controls, text="打开 Word", command=self._open_result, state="disabled")
         self.open_result_button.pack(side="left", padx=(8, 0))
+        self.open_html_button = ttk.Button(controls, text="打开手机 HTML", command=self._open_mobile_html, state="disabled")
+        self.open_html_button.pack(side="left", padx=(8, 0))
         ttk.Button(controls, text="打开输出目录", command=self._open_output_dir).pack(side="left", padx=(8, 0))
 
         self.progress = ttk.Progressbar(run_frame, variable=self.progress_var, maximum=100, mode="determinate")
@@ -235,14 +296,20 @@ class WordlistApp(tk.Tk):
 
         footer = ttk.Label(
             outer,
-            text="提示：调用 Kimi API 会从你的开放平台余额中按量扣费。首次建议用较短文档测试。",
+            text="提示：调用模型 API 会从所选平台余额中按量扣费。首次建议用较短文档测试。",
             foreground="#666666",
         )
         footer.grid(row=4, column=0, sticky="w", pady=(9, 0))
 
-    def _load_saved_api_key(self) -> str:
+    def _load_saved_api_key(self, provider_id: str) -> str:
+        provider = get_api_provider(provider_id)
         try:
-            return keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME) or ""
+            saved = keyring.get_password(KEYRING_SERVICE, provider.keyring_username) or ""
+            if saved:
+                return saved
+            if provider.id == "moonshot":
+                return keyring.get_password(LEGACY_KEYRING_SERVICE, provider.keyring_username) or ""
+            return ""
         except KeyringError:
             return ""
 
@@ -250,12 +317,13 @@ class WordlistApp(tk.Tk):
         if not self.remember_key_var.get():
             return
 
+        provider = get_api_provider(self.provider_var.get())
         api_key = self.api_key_var.get().strip()
         if not api_key:
             return
 
         try:
-            keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, api_key)
+            keyring.set_password(KEYRING_SERVICE, provider.keyring_username, api_key)
             self._append_log("API Key 已安全保存到 Windows 凭据管理器。")
         except KeyringError as exc:
             self._append_log(f"无法保存 API Key：{exc}")
@@ -267,18 +335,25 @@ class WordlistApp(tk.Tk):
             )
 
     def _clear_saved_api_key(self) -> None:
+        provider = get_api_provider(self.provider_var.get())
         confirmed = messagebox.askyesno(
             "清除已保存 Key",
-            "确定从这台电脑的 Windows 凭据管理器中删除已保存的 Kimi API Key 吗？",
+            f"确定从这台电脑的 Windows 凭据管理器中删除已保存的 {provider.display_name} API Key 吗？",
             parent=self,
         )
         if not confirmed:
             return
 
         try:
-            keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
-        except PasswordDeleteError:
-            pass
+            try:
+                keyring.delete_password(KEYRING_SERVICE, provider.keyring_username)
+            except PasswordDeleteError:
+                pass
+            if provider.id == "moonshot":
+                try:
+                    keyring.delete_password(LEGACY_KEYRING_SERVICE, provider.keyring_username)
+                except PasswordDeleteError:
+                    pass
         except KeyringError as exc:
             messagebox.showerror(
                 "清除失败",
@@ -291,6 +366,30 @@ class WordlistApp(tk.Tk):
         self.remember_key_var.set(False)
         self._append_log("已从 Windows 凭据管理器清除 API Key。")
         messagebox.showinfo("已清除", "已保存的 API Key 已删除。", parent=self)
+
+    def _migrate_legacy_files(self) -> None:
+        legacy_dir = legacy_user_data_dir()
+        if not legacy_dir.is_dir():
+            return
+        for filename in ("rules.txt", "settings.json"):
+            legacy_path = legacy_dir / filename
+            target_path = self.app_dir / filename
+            if legacy_path.is_file() and not target_path.exists():
+                try:
+                    shutil.copy2(legacy_path, target_path)
+                except OSError:
+                    pass
+
+    def _resolve_initial_provider(self, settings: dict[str, str]) -> str:
+        provider_id = settings.get("provider", "").strip()
+        if provider_id in API_PROVIDERS:
+            return provider_id
+        model = settings.get("model", "").strip().lower()
+        if model.startswith("kimi-"):
+            return "moonshot"
+        if model.startswith("glm-"):
+            return "bigmodel"
+        return DEFAULT_PROVIDER_ID
 
     def _ensure_rules_file(self) -> None:
         if self.rules_path.exists():
@@ -310,7 +409,11 @@ class WordlistApp(tk.Tk):
         data = {
             "last_input": self.input_var.get().strip(),
             "last_output": self.output_var.get().strip(),
+            "provider": self.provider_var.get().strip(),
             "model": self.model_var.get().strip(),
+            "publish_homepage": "1" if self.publish_homepage_var.get() else "0",
+            "homepage_repo": self.homepage_repo_var.get().strip(),
+            "push_homepage": "1" if self.push_homepage_var.get() else "0",
         }
         try:
             self.settings_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -346,6 +449,25 @@ class WordlistApp(tk.Tk):
         if path:
             self.output_var.set(path)
 
+    def _choose_homepage_repo(self) -> None:
+        initial = self.homepage_repo_var.get().strip() or str(DEFAULT_HOMEPAGE_REPO.parent)
+        path = filedialog.askdirectory(title="选择 personal-homepage 仓库目录", initialdir=initial)
+        if path:
+            self.homepage_repo_var.set(path)
+
+    def _on_provider_changed(self, _event: object | None = None) -> None:
+        provider_id = self.provider_display_to_id.get(self.provider_display_var.get(), DEFAULT_PROVIDER_ID)
+        provider = get_api_provider(provider_id)
+        self.provider_var.set(provider.id)
+        self.model_combo.configure(values=provider.default_models)
+        if self.model_var.get().strip() not in provider.default_models:
+            self.model_var.set(provider.default_model)
+        saved_api_key = self._load_saved_api_key(provider.id)
+        environment_api_key = os.getenv(provider.env_var, "").strip()
+        self.api_key_var.set(environment_api_key or saved_api_key)
+        self.remember_key_var.set(bool(saved_api_key and not environment_api_key))
+        self._append_log(f"已切换模型服务：{provider.display_name}。")
+
     def _toggle_key(self) -> None:
         self.key_entry.configure(show="" if self.show_key_var.get() else "●")
 
@@ -370,20 +492,22 @@ class WordlistApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("恢复失败", friendly_error(exc), parent=self)
 
-    def _validate_api_fields(self) -> tuple[str, str]:
+    def _validate_api_fields(self) -> tuple[str, str, str]:
+        provider = get_api_provider(self.provider_var.get())
         key = self.api_key_var.get().strip()
         model = self.model_var.get().strip()
         if not key:
-            raise ValueError("请先填写 Kimi API Key。")
+            raise ValueError(f"请先填写 {provider.display_name} API Key。")
         if not model:
             raise ValueError("请填写模型名称。")
-        return key, model
+        return provider.id, key, model
 
     def _set_busy(self, busy: bool) -> None:
         self.worker_running = busy
         self.start_button.configure(state="disabled" if busy else "normal")
         if busy:
             self.open_result_button.configure(state="disabled")
+            self.open_html_button.configure(state="disabled")
 
     def _start_processing(self) -> None:
         if self.worker_running:
@@ -391,18 +515,22 @@ class WordlistApp(tk.Tk):
         try:
             input_path = Path(self.input_var.get().strip())
             output_dir = Path(self.output_var.get().strip())
-            api_key, model = self._validate_api_fields()
+            provider_id, api_key, model = self._validate_api_fields()
             if input_path.suffix.lower() not in SUPPORTED_INPUT_SUFFIXES or not input_path.is_file():
                 raise ValueError("请选择一个有效的 .docx 或 .txt 原始单词记录文件。")
             if not self.output_var.get().strip():
                 raise ValueError("请选择输出目录。")
+            if self.publish_homepage_var.get():
+                homepage_repo = Path(self.homepage_repo_var.get().strip())
+                if not homepage_repo.is_dir():
+                    raise ValueError("已启用个人主页归档，请选择有效的 personal-homepage 仓库目录。")
         except Exception as exc:
             messagebox.showwarning("信息不完整", friendly_error(exc), parent=self)
             return
 
         confirmed = messagebox.askyesno(
             "确认调用 API",
-            "整理过程会调用 Kimi API，并从开放平台余额中按量扣费。\n\n确定开始吗？",
+            "整理过程会调用所选模型 API，并从对应平台余额中按量扣费。\n\n确定开始吗？",
             parent=self,
         )
         if not confirmed:
@@ -415,7 +543,11 @@ class WordlistApp(tk.Tk):
         self._append_log("\n—— 开始新的整理任务 ——")
         self._append_log(f"输入：{input_path}")
         self._append_log(f"输出：{output_dir}")
+        self._append_log(f"模型服务：{get_api_provider(provider_id).display_name}")
         self._append_log(f"模型：{model}")
+        if self.publish_homepage_var.get():
+            self._append_log(f"个人主页归档：{self.homepage_repo_var.get().strip()}")
+            self._append_log("发布方式：自动提交并推送到 GitHub" if self.push_homepage_var.get() else "发布方式：只写入本地个人主页仓库")
         self._set_busy(True)
 
         threading.Thread(
@@ -423,9 +555,13 @@ class WordlistApp(tk.Tk):
             kwargs={
                 "input_path": input_path,
                 "output_dir": output_dir,
+                "provider_id": provider_id,
                 "api_key": api_key,
                 "model": model,
                 "thinking_enabled": self.thinking_var.get(),
+                "publish_to_homepage": self.publish_homepage_var.get(),
+                "homepage_repo": Path(self.homepage_repo_var.get().strip()) if self.publish_homepage_var.get() else None,
+                "push_homepage": self.push_homepage_var.get(),
             },
             daemon=True,
         ).start()
@@ -435,18 +571,26 @@ class WordlistApp(tk.Tk):
         *,
         input_path: Path,
         output_dir: Path,
+        provider_id: str,
         api_key: str,
         model: str,
         thinking_enabled: bool,
+        publish_to_homepage: bool,
+        homepage_repo: Path | None,
+        push_homepage: bool,
     ) -> None:
         try:
             result = process_wordlist(
                 input_docx=input_path,
                 output_dir=output_dir,
                 rules_path=self.rules_path,
+                provider_id=provider_id,
                 api_key=api_key,
                 model=model,
                 thinking_enabled=thinking_enabled,
+                publish_to_homepage=publish_to_homepage,
+                homepage_repo=homepage_repo,
+                push_homepage=push_homepage,
                 progress_callback=lambda percent, message: self.events.put(("progress", (percent, message))),
             )
             self.events.put(("success", result))
@@ -457,18 +601,18 @@ class WordlistApp(tk.Tk):
         if self.worker_running:
             return
         try:
-            api_key, model = self._validate_api_fields()
+            provider_id, api_key, model = self._validate_api_fields()
         except Exception as exc:
             messagebox.showwarning("信息不完整", friendly_error(exc), parent=self)
             return
 
-        self._append_log(f"正在测试模型 {model}……")
+        self._append_log(f"正在测试 {get_api_provider(provider_id).display_name} 模型 {model}……")
         self.status_var.set("正在测试 API……")
         self._set_busy(True)
 
         def worker() -> None:
             try:
-                reply = test_api(api_key, model)
+                reply = test_api(api_key, model, provider_id)
                 self.events.put(("api_test_success", reply))
             except Exception as exc:
                 self.events.put(("error", (exc, traceback.format_exc())))
@@ -479,18 +623,18 @@ class WordlistApp(tk.Tk):
         if self.worker_running:
             return
         try:
-            api_key, _ = self._validate_api_fields()
+            provider_id, api_key, _ = self._validate_api_fields()
         except Exception as exc:
             messagebox.showwarning("需要 API Key", friendly_error(exc), parent=self)
             return
 
-        self._append_log("正在从 Kimi 开放平台获取可用模型列表……")
+        self._append_log(f"正在从 {get_api_provider(provider_id).display_name} 获取可用模型列表……")
         self.status_var.set("正在刷新模型列表……")
         self._set_busy(True)
 
         def worker() -> None:
             try:
-                models = list_available_models(api_key)
+                models = list_available_models(api_key, provider_id)
                 self.events.put(("models", models))
             except Exception as exc:
                 self.events.put(("error", (exc, traceback.format_exc())))
@@ -518,7 +662,8 @@ class WordlistApp(tk.Tk):
                     self._save_api_key_if_requested()
                     self.status_var.set("API 连接正常。")
                     self._append_log(f"API 测试结果：{payload}")
-                    messagebox.showinfo("测试成功", f"Kimi API 连接正常。\n\n返回：{payload}", parent=self)
+                    provider = get_api_provider(self.provider_var.get())
+                    messagebox.showinfo("测试成功", f"{provider.display_name} API 连接正常。\n\n返回：{payload}", parent=self)
         except queue.Empty:
             pass
         finally:
@@ -531,7 +676,15 @@ class WordlistApp(tk.Tk):
         self.progress_var.set(100)
         self.status_var.set("整理完成。")
         self.open_result_button.configure(state="normal")
+        self.open_html_button.configure(state="normal")
         self._append_log(f"Word 已生成：{result.output_docx}")
+        self._append_log(f"手机 HTML 已生成：{result.output_html}")
+        if result.homepage_publish:
+            self._append_log(f"个人主页归档：{result.homepage_publish.archive_dir}")
+            if result.homepage_publish.commit_hash:
+                self._append_log(f"Git 提交：{result.homepage_publish.commit_hash}")
+            if result.homepage_publish.url:
+                self._append_log(f"网站地址：{result.homepage_publish.url}")
         self._append_log(f"结构化 JSON：{result.parsed_json}")
         if result.total_tokens is not None:
             self._append_log(
@@ -541,11 +694,17 @@ class WordlistApp(tk.Tk):
 
         open_now = messagebox.askyesno(
             "整理完成",
-            f"文件已生成：\n{result.output_docx}\n\n现在打开 Word 文件吗？",
+            f"Word 已生成：\n{result.output_docx}\n\n手机 HTML 已生成：\n{result.output_html}"
+            + (
+                f"\n\n已归档到个人主页：\n{result.homepage_publish.url or result.homepage_publish.archive_dir}"
+                if result.homepage_publish
+                else ""
+            )
+            + "\n\n现在打开手机版 HTML 吗？",
             parent=self,
         )
         if open_now:
-            self._open_result()
+            self._open_mobile_html()
 
     def _handle_error(self, exc: Exception, trace: str) -> None:
         self._set_busy(False)
@@ -569,7 +728,8 @@ class WordlistApp(tk.Tk):
             return
         self.model_combo.configure(values=models)
         if self.model_var.get().strip() not in models:
-            preferred = next((name for name in models if name == "kimi-k2.6"), models[0])
+            provider = get_api_provider(self.provider_var.get())
+            preferred = next((name for name in models if name == provider.default_model), models[0])
             self.model_var.set(preferred)
         self.status_var.set(f"已获取 {len(models)} 个可用模型。")
         self._append_log(f"已刷新模型列表，共 {len(models)} 个。")
@@ -581,6 +741,14 @@ class WordlistApp(tk.Tk):
             open_path(self.last_result.output_docx)
         except Exception as exc:
             messagebox.showerror("无法打开结果", friendly_error(exc), parent=self)
+
+    def _open_mobile_html(self) -> None:
+        if not self.last_result:
+            return
+        try:
+            open_path(self.last_result.output_html)
+        except Exception as exc:
+            messagebox.showerror("无法打开手机 HTML", friendly_error(exc), parent=self)
 
     def _open_output_dir(self) -> None:
         path_text = self.output_var.get().strip()

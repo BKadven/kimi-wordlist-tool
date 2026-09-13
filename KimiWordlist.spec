@@ -27,7 +27,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="Kimi雅思单词本整理器_太阳版",
+    name="Wgen",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

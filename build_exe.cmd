@@ -4,7 +4,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ================================================
-echo Building Kimi Wordlist Tool for Windows
+echo Building Wgen for Windows
 echo ================================================
 echo.
 
@@ -31,7 +31,7 @@ if errorlevel 1 goto error
 echo [3/3] Finished.
 echo.
 echo EXE location:
-echo %~dp0dist\Kimi雅思单词本整理器_太阳版.exe
+echo %~dp0dist\Wgen.exe
 echo.
 start "" "%~dp0dist"
 pause
